@@ -37,6 +37,10 @@ const (
 	p75
 	p90
 	p99
+
+	instanceMetadataUrl string = "http://169.254.169.254"
+	apiZone             string = "/latest/meta-data/placement/availability-zone"
+	getToken            string = "/latest/api/token"
 )
 
 // a benchmark record for one object size and thread count
@@ -136,7 +140,7 @@ func parseFlags() {
 	cleanupArg := flag.Bool("cleanup", false, "Cleans all the objects uploaded to S3 for this test.")
 	csvResultsArg := flag.String("upload-csv", "", "Uploads the test results to S3 as a CSV file.")
 	createBucketArg := flag.Bool("create-bucket", true, "Create the bucket")
-	
+
 	// parse the arguments and set all the global variables accordingly
 	flag.Parse()
 
@@ -227,7 +231,7 @@ func setup() {
 			},
 		})
 
-		// AWS S3 has this peculiar issue in which if you want to create bucket in us-east-1 region, you should NOT specify 
+		// AWS S3 has this peculiar issue in which if you want to create bucket in us-east-1 region, you should NOT specify
 		// any location constraint. https://github.com/boto/boto3/issues/125
 		if strings.ToLower(region) == "us-east-1" {
 			createBucketReq = s3Client.CreateBucketRequest(&s3.CreateBucketInput{
@@ -240,7 +244,7 @@ func setup() {
 		// if the error is because the bucket already exists, ignore the error
 		if err != nil && !strings.Contains(err.Error(), "BucketAlreadyOwnedByYou:") {
 			panic("Failed to create S3 bucket: " + err.Error())
-		}	
+		}
 	}
 
 	// an object size iterator that starts from 1 KB and doubles the size on every iteration
@@ -628,14 +632,50 @@ func byteFormat(bytes float64) string {
 	return fmt.Sprintf("%.f KB", bytes/1024)
 }
 
+func getTokenForIMDSv2() (string, error) {
+	httpClient := &http.Client{
+		Timeout: time.Second,
+	}
+	tokenUrl := fmt.Sprintf("%s%s", instanceMetadataUrl, getToken)
+
+	req, err := http.NewRequest("PUT", tokenUrl, nil)
+	if err != nil {
+		return "", err
+	}
+
+	req.Header.Set("X-aws-ec2-metadata-token-ttl-seconds", "21600")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+
+	body, err := ioutil.ReadAll(resp.Body)
+	bodyString := string(body)
+
+	return bodyString, nil
+}
+
 // gets the EC2 region from the instance metadata
 func getRegion() string {
 	httpClient := &http.Client{
 		Timeout: time.Second,
 	}
 
-	link := "http://169.254.169.254/latest/meta-data/placement/availability-zone"
-	response, err := httpClient.Get(link)
+	token, err := getTokenForIMDSv2()
+	if err != nil {
+		return defaultRegion
+	}
+
+	url := fmt.Sprintf("%s%s", instanceMetadataUrl, apiZone)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return defaultRegion
+	}
+
+	req.Header.Set("X-aws-ec2-metadata-token", token)
+
+	response, err := httpClient.Do(req)
 	if err != nil {
 		return defaultRegion
 	}
